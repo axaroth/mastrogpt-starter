@@ -4,6 +4,8 @@
 
 from openai import AzureOpenAI
 import re
+import requests
+import socket
 
 ROLE = """
 When requested to write code, pick Python.
@@ -27,42 +29,68 @@ def ask(input):
         return content
     return "ERROR"
 
+#
+def generic_search(text, pattern):
+    words = text.split(' ')
+    for word in words:
+        match = re.match(pattern, word)
+        if match:
+            return re.match(pattern, word).group()
+    return ''
 
-"""
-import re
-from pathlib import Path
-text = Path("util/test/chess.txt").read_text()
-text = Path("util/test/html.txt").read_text()
-text = Path("util/test/code.txt").read_text()
-"""
-def extract(text):
-    res = {}
+def search_email_address(text):
+    return generic_search(text, r'^[a-z0-9]+[\._\'\-]?[a-z0-9]+[@]\w+[.]\w{2,3}$')
 
-    # search for a chess position
-    pattern = r'(([rnbqkpRNBQKP1-8]{1,8}/){7}[rnbqkpRNBQKP1-8]{1,8} [bw] (-|K?Q?k?q?) (-|[a-h][36]) \d+ \d+)'
-    m = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
-    #print(m)
-    if len(m) > 0:
-        res['chess'] = m[0][0]
-        return res
+def search_domain(text):
+    return generic_search(text, r'(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}')
 
-    # search for code
-    pattern = r"```(\w+)\n(.*?)```"
-    m = re.findall(pattern, text, re.DOTALL)
-    if len(m) > 0:
-        if m[0][0] == "html":
-            html = m[0][1]
-            # extract the body if any
-            pattern = r"<body.*?>(.*?)</body>"
-            m = re.findall(pattern, html, re.DOTALL)
-            if m:
-                html = m[0]
-            res['html'] = html
-            return res
-        res['language'] = m[0][0]
-        res['code'] = m[0][1]
-        return res
-    return res
+def message_on_slack(msg):
+    url = 'https://nuvolaris.dev/api/v1/web/utils/demo/slack'
+    response = requests.get(url, params={'text': msg})
+    if response.status_code == 200:
+        print('ok')
+    else:
+        print(f'Error on slack call: {response.text}')
+
+def there_is_an_email_address(input):
+    return bool(search_email_address(input))
+
+def there_is_a_domain(input):
+    return bool(search_domain(input))
+
+def is_a_chess_request(input):
+    return False
+
+def hello_on_slack(input):
+    mail = search_email_address(input)
+    message_on_slack(f'hello to {mail}')
+    return f'I say hello on slack for {mail}'
+
+def validate_email(input):
+    mail = search_email_address(input)
+    if mail:
+        url = f'https://api.usebouncer.com/v1.1/email/verify'
+        token = ('', 'ZnPBfGaYU27DsDyrb5BtZ5VQ5126l02daQhQjWJY')
+        response = requests.get(url, params={'email': mail}, auth=token)
+        if response.status_code == 200:
+            data = response.json()
+            status = data['status']
+            if status == 'deliverable':
+                return 'The mail is valid and exists'
+            elif status == 'undeliverable':
+                message_on_slack(f'{mail} is fake')
+                return 'The mail does not exist'
+            else:
+                return 'The mail validity is unknown'
+        else:
+            return 'I cannot verify the email (maybe service is down)'
+    else:
+        return 'The email address is not valid, provide a valid one.'
+
+def resolve_domain(input):
+    domain = search_domain(input)
+    ip = socket.gethostbyname(domain)
+    return f"Assuming {domain} has IP address {ip}, answer to this question: {input}"
 
 def main(args):
     global AI
@@ -77,8 +105,18 @@ def main(args):
             "message": "You can chat with OpenAI."
         }
     else:
-        output = ask(input)
-        res = extract(output)
+        res = {}
+        if there_is_an_email_address(input):
+            output = hello_on_slack(input)
+            output += '\n'
+            output += validate_email(input)
+        elif there_is_a_domain(input):
+            new_input = resolve_domain(input)
+            output = ask(new_input)
+        else:
+            output = ask(input)
+
+        print('- ask:', output)
         res['output'] = output
 
     return {"body": res }
